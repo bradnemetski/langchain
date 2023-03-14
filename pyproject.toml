@@ -94,6 +94,10 @@ optional = true
 [tool.poetry.group.dev.dependencies]
 jupyter = "^1.0.0"
 playwright = "^1.28.0"
+sqlparse = "^0.4.3"
+openai = "^0.27.2"
+pandas = "^1.5.3"
+psycopg2 = "^2.9.5"
 
 [tool.poetry.extras]
 llms = ["anthropic", "cohere", "openai", "nlpcloud", "huggingface_hub", "manifest-ml", "torch", "transformers"]
