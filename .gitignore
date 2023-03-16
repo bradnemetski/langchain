@@ -5,6 +5,9 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# per https://python-poetry.org/docs/basic-usage/#commit-your-poetrylock-file-to-version-control
+poetry.lock
+
 # C extensions
 *.so
 
