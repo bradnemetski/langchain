@@ -3,11 +3,14 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Tuple, Type
+
+import numpy as np
 
 from langchain.docstore.document import Document
 from langchain.embeddings.base import Embeddings
 from langchain.vectorstores.base import VectorStore
+from langchain.vectorstores.utils import maximal_marginal_relevance
 
 if TYPE_CHECKING:
     import chromadb
@@ -24,7 +27,7 @@ def _results_to_docs_and_scores(results: Any) -> List[Tuple[Document, float]]:
     return [
         # TODO: Chroma can do batch querying,
         # we shouldn't hard code to the 1st result
-        (Document(page_content=result[0], metadata=result[1]), result[2])
+        (Document(page_content=result[0], metadata=result[1] or {}), result[2])
         for result in zip(
             results["documents"][0],
             results["metadatas"][0],
@@ -56,6 +59,7 @@ class Chroma(VectorStore):
         embedding_function: Optional[Embeddings] = None,
         persist_directory: Optional[str] = None,
         client_settings: Optional[chromadb.config.Settings] = None,
+        collection_metadata: Optional[Dict] = None,
     ) -> None:
         """Initialize with Chroma client."""
         try:
@@ -83,6 +87,7 @@ class Chroma(VectorStore):
             embedding_function=self._embedding_function.embed_documents
             if self._embedding_function is not None
             else None,
+            metadata=collection_metadata,
         )
 
     def add_texts(
@@ -128,15 +133,16 @@ class Chroma(VectorStore):
             filter (Optional[Dict[str, str]]): Filter by metadata. Defaults to None.
 
         Returns:
-            List[Document]: List of documents most simmilar to the query text.
+            List[Document]: List of documents most similar to the query text.
         """
-        docs_and_scores = self.similarity_search_with_score(query, k)
+        docs_and_scores = self.similarity_search_with_score(query, k, filter=filter)
         return [doc for doc, _ in docs_and_scores]
 
     def similarity_search_by_vector(
         self,
         embedding: List[float],
         k: int = 4,
+        filter: Optional[Dict[str, str]] = None,
         **kwargs: Any,
     ) -> List[Document]:
         """Return docs most similar to embedding vector.
@@ -146,7 +152,9 @@ class Chroma(VectorStore):
         Returns:
             List of Documents most similar to the query vector.
         """
-        results = self._collection.query(query_embeddings=embedding, n_results=k)
+        results = self._collection.query(
+            query_embeddings=embedding, n_results=k, where=filter
+        )
         return _results_to_docs(results)
 
     def similarity_search_with_score(
@@ -179,6 +187,71 @@ class Chroma(VectorStore):
 
         return _results_to_docs_and_scores(results)
 
+    def max_marginal_relevance_search_by_vector(
+        self,
+        embedding: List[float],
+        k: int = 4,
+        fetch_k: int = 20,
+        filter: Optional[Dict[str, str]] = None,
+        **kwargs: Any,
+    ) -> List[Document]:
+        """Return docs selected using the maximal marginal relevance.
+        Maximal marginal relevance optimizes for similarity to query AND diversity
+        among selected documents.
+        Args:
+            embedding: Embedding to look up documents similar to.
+            k: Number of Documents to return. Defaults to 4.
+            fetch_k: Number of Documents to fetch to pass to MMR algorithm.
+            filter (Optional[Dict[str, str]]): Filter by metadata. Defaults to None.
+        Returns:
+            List of Documents selected by maximal marginal relevance.
+        """
+
+        results = self._collection.query(
+            query_embeddings=embedding,
+            n_results=fetch_k,
+            where=filter,
+            include=["metadatas", "documents", "distances", "embeddings"],
+        )
+        mmr_selected = maximal_marginal_relevance(
+            np.array(embedding, dtype=np.float32), results["embeddings"][0], k=k
+        )
+
+        candidates = _results_to_docs(results)
+
+        selected_results = [r for i, r in enumerate(candidates) if i in mmr_selected]
+        return selected_results
+
+    def max_marginal_relevance_search(
+        self,
+        query: str,
+        k: int = 4,
+        fetch_k: int = 20,
+        filter: Optional[Dict[str, str]] = None,
+        **kwargs: Any,
+    ) -> List[Document]:
+        """Return docs selected using the maximal marginal relevance.
+        Maximal marginal relevance optimizes for similarity to query AND diversity
+        among selected documents.
+        Args:
+            query: Text to look up documents similar to.
+            k: Number of Documents to return. Defaults to 4.
+            fetch_k: Number of Documents to fetch to pass to MMR algorithm.
+            filter (Optional[Dict[str, str]]): Filter by metadata. Defaults to None.
+        Returns:
+            List of Documents selected by maximal marginal relevance.
+        """
+        if self._embedding_function is None:
+            raise ValueError(
+                "For MMR search, you must specify an embedding function on" "creation."
+            )
+
+        embedding = self._embedding_function.embed_query(query)
+        docs = self.max_marginal_relevance_search_by_vector(
+            embedding, k, fetch_k, filter
+        )
+        return docs
+
     def delete_collection(self) -> None:
         """Delete the collection."""
         self._client.delete_collection(self._collection.name)
@@ -198,7 +271,7 @@ class Chroma(VectorStore):
 
     @classmethod
     def from_texts(
-        cls,
+        cls: Type[Chroma],
         texts: List[str],
         embedding: Optional[Embeddings] = None,
         metadatas: Optional[List[dict]] = None,
@@ -236,7 +309,7 @@ class Chroma(VectorStore):
 
     @classmethod
     def from_documents(
-        cls,
+        cls: Type[Chroma],
         documents: List[Document],
         embedding: Optional[Embeddings] = None,
         ids: Optional[List[str]] = None,
